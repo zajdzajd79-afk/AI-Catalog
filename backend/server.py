@@ -5,7 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
@@ -53,20 +53,11 @@ class Product(BaseModel):
 class ProductCreate(BaseModel):
     name: str
     price: float
-    images: List[str] = Field(default_factory=list)
+    images: List[str] = Field(..., min_length=1, max_length=5)
     category: Optional[str] = None
     subcategory: Optional[str] = None
     barcode: Optional[str] = None
     article_number: Optional[str] = None
-
-    @field_validator('images')
-    @classmethod
-    def validate_images(cls, v):
-        if len(v) < 1:
-            raise ValueError("At least 1 image is required")
-        if len(v) > 5:
-            raise ValueError("Maximum 5 images allowed")
-        return v
 
 
 class ProductUpdate(BaseModel):
