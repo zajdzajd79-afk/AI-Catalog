@@ -12,7 +12,7 @@ from datetime import datetime
 import base64
 from io import BytesIO
 from PIL import Image
-from openai import OpenAI
+from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 
 
 ROOT_DIR = Path(__file__).parent
@@ -22,9 +22,6 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
-
-# OpenAI client
-openai_client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -80,7 +77,7 @@ class SearchResponse(BaseModel):
 
 # ============= AI Functions =============
 
-def analyze_product_image(image_base64: str, all_products: List[Product]) -> Optional[Product]:
+async def analyze_product_image(image_base64: str, all_products: List[Product]) -> Optional[Product]:
     """
     Analyze product image using OpenAI Vision API and find matching product
     """
@@ -93,40 +90,35 @@ def analyze_product_image(image_base64: str, all_products: List[Product]) -> Opt
         
         products_text = "\n".join([f"{i+1}. {desc}" for i, desc in enumerate(product_descriptions)])
         
-        # Call OpenAI Vision API
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""Analyze this product image and find the best matching product from the list below.
-                            
+        # Initialize LlmChat with emergentintegrations
+        api_key = os.environ.get('EMERGENT_LLM_KEY', os.environ.get('OPENAI_API_KEY'))
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"product_search_{uuid.uuid4()}",
+            system_message="You are a product identification assistant."
+        ).with_model("openai", "gpt-4o-mini")
+        
+        # Create image content
+        image_content = ImageContent(image_base64=image_base64)
+        
+        # Create user message with image
+        user_message = UserMessage(
+            text=f"""Analyze this product image and find the best matching product from the list below.
+            
 Products in database:
 {products_text}
 
 Please respond with ONLY the number of the matching product (1-{len(all_products)}). If no good match exists, respond with '0'.
-Consider the visual appearance, category, and type of product."""
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_base64}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=50
+Consider the visual appearance, category, and type of product.""",
+            file_contents=[image_content]
         )
         
-        result = response.choices[0].message.content.strip()
+        # Send message and get response
+        response = await chat.send_message(user_message)
         
         # Extract number from response
         try:
-            match_index = int(result) - 1
+            match_index = int(response.strip()) - 1
             if 0 <= match_index < len(all_products):
                 return all_products[match_index]
         except:
@@ -141,11 +133,11 @@ Consider the visual appearance, category, and type of product."""
 
 # ============= Category Routes =============
 
-@api_router.get("/categories")
+@api_router.get("/categories", response_model=List[Category])
 async def get_categories():
     """Get all categories"""
     categories = await db.categories.find().to_list(1000)
-    return categories if categories else []
+    return [Category(**c) for c in categories] if categories else []
 
 @api_router.post("/categories")
 async def create_category(category: Category):
@@ -227,7 +219,7 @@ async def search_by_photo(request: PhotoSearchRequest):
         products_list = [Product(**p) for p in all_products]
         
         # Use AI to find matching product
-        matched_product = analyze_product_image(request.image_base64, products_list)
+        matched_product = await analyze_product_image(request.image_base64, products_list)
         
         if matched_product:
             return SearchResponse(
